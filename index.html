@@ -218,13 +218,19 @@
   <div class="step">
     <div class="step-head">
       <div class="step-num" id="num2">2</div>
-      <div class="step-title">BGM（任意）</div>
+      <div class="step-title">音声</div>
     </div>
-    <div class="step-sub">つけない場合はそのまま次へ</div>
+    <div class="step-sub">元動画の音とBGM、必要な方をオンにしてください</div>
     <div class="step-body">
+      <div class="bgm-row" style="margin-bottom:12px;">
+        <span class="name">動画本来の音を使う</span>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+          <input type="checkbox" id="origAudioToggle">ON
+        </label>
+      </div>
       <div class="bgm-row">
         <input type="file" id="bgmInput" accept="audio/*" style="display:none">
-        <span class="name" id="bgmName">未選択</span>
+        <span class="name" id="bgmName">BGM：未選択</span>
         <button class="btn-ghost" id="bgmBtn">選ぶ</button>
       </div>
       <div class="field-row" style="margin-top:10px;">
@@ -279,6 +285,8 @@ const bgmInput = document.getElementById('bgmInput');
 const bgmBtn = document.getElementById('bgmBtn');
 const bgmName = document.getElementById('bgmName');
 
+const origAudioToggle = document.getElementById('origAudioToggle');
+
 const bgmVolInput = document.getElementById('bgmVol');
 const bgmVolLabel = document.getElementById('bgmVolLabel');
 bgmVolInput.addEventListener('input', () => {
@@ -289,7 +297,7 @@ bgmBtn.addEventListener('click', () => bgmInput.click());
 bgmInput.addEventListener('change', () => {
   if (bgmInput.files[0]) {
     bgmFile = bgmInput.files[0];
-    bgmName.textContent = bgmFile.name;
+    bgmName.textContent = 'BGM：' + bgmFile.name;
   }
 });
 
@@ -307,18 +315,101 @@ function handleFiles(fileListLike) {
     if (clips.length >= 5) break;
     const id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const url = URL.createObjectURL(f);
-    const clip = { id, file: f, url, srcDuration: 0, start: 0, dur: 3, telop: '' };
+    const clip = { id, file: f, url, srcDuration: 0, start: 0, dur: 3, telop: '', analyzing: true };
     clips.push(clip);
+    analyzeClip(clip).then(() => {
+      clip.analyzing = false;
+      renderClips();
+    }).catch(() => {
+      clip.analyzing = false;
+      clip.dur = Math.min(clip.srcDuration || 3, 4);
+      clip.start = 0;
+      renderClips();
+    });
   }
   fileInput.value = '';
   renderClips();
 }
+
+// ---- Auto-trim: pick a stable, low-motion window without any manual UI ----
+function seekTo(video, t) {
+  return new Promise((resolve) => {
+    const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
+    video.addEventListener('seeked', onSeeked);
+    video.currentTime = t;
+  });
+}
+
+async function analyzeClip(clip) {
+  const video = document.createElement('video');
+  video.src = clip.url;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  await new Promise((resolve, reject) => {
+    video.onloadedmetadata = resolve;
+    video.onerror = () => reject(new Error('load failed'));
+  });
+  const duration = video.duration || 3;
+  clip.srcDuration = duration;
+
+  // Trim off the shaky first/last 0.5s (raising/lowering the camera).
+  const pad = 0.5;
+  let innerStart = 0, innerEnd = duration;
+  if (duration > pad * 2 + 0.4) { innerStart = pad; innerEnd = duration - pad; }
+  const usable = Math.max(innerEnd - innerStart, 0.3);
+  const targetLen = Math.min(usable, 4);
+
+  if (usable <= targetLen + 0.05) {
+    clip.start = innerStart;
+    clip.dur = usable;
+    return;
+  }
+
+  // Slide a window across the clip, sampling a few low-res frames per
+  // window, and pick the window with the least frame-to-frame change
+  // (i.e. the steadiest, least "moving" segment).
+  const canvas = document.createElement('canvas');
+  canvas.width = 48; canvas.height = 27;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  async function grabFrame(t) {
+    await seekTo(video, Math.min(Math.max(t, 0), duration - 0.02));
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  }
+  function diffScore(a, b) {
+    let sum = 0;
+    for (let i = 0; i < a.length; i += 4) sum += Math.abs(a[i] - b[i]);
+    return sum;
+  }
+
+  const step = 0.5;
+  const samples = 4;
+  let best = { start: innerStart, score: Infinity };
+  for (let ws = innerStart; ws + targetLen <= innerEnd + 0.001; ws += step) {
+    const frames = [];
+    for (let k = 0; k < samples; k++) {
+      const t = ws + (targetLen * k) / (samples - 1);
+      frames.push(await grabFrame(t));
+    }
+    let score = 0;
+    for (let k = 1; k < frames.length; k++) score += diffScore(frames[k - 1], frames[k]);
+    if (score < best.score) best = { start: ws, score };
+  }
+  clip.start = best.start;
+  clip.dur = targetLen;
+}
+
 
 function renderClips() {
   clipList.innerHTML = '';
   clips.forEach((clip, idx) => {
     const row = document.createElement('div');
     row.className = 'clip';
+    const durText = clip.analyzing
+      ? '解析中…'
+      : `アップロードした動画の長さ：${clip.srcDuration.toFixed(1)}秒`;
     row.innerHTML = `
       <video src="${clip.url}" muted preload="metadata"></video>
       <div class="clip-main">
@@ -330,25 +421,10 @@ function renderClips() {
           <label>テロップ文言</label>
           <input type="text" maxlength="24" placeholder="例）艶やかな質感" data-telop="${clip.id}" value="${clip.telop}">
         </div>
-        <div class="field-row">
-          <label>使用する長さ：<span class="range-vals" data-durlabel="${clip.id}">3.0秒</span></label>
-          <input type="range" min="1" max="5" step="0.5" value="${clip.dur}" data-dur="${clip.id}">
-        </div>
-        <div class="field-row">
-          <label>切り出し開始位置：<span class="range-vals" data-startlabel="${clip.id}">0.0秒</span></label>
-          <input type="range" min="0" max="0" step="0.1" value="0" data-start="${clip.id}">
-        </div>
+        <div class="range-vals">${durText}</div>
       </div>
     `;
     clipList.appendChild(row);
-
-    const videoEl = row.querySelector('video');
-    videoEl.addEventListener('loadedmetadata', () => {
-      clip.srcDuration = videoEl.duration || 5;
-      const startInput = row.querySelector(`[data-start="${clip.id}"]`);
-      const maxStart = Math.max(0, clip.srcDuration - clip.dur);
-      startInput.max = maxStart.toFixed(1);
-    });
   });
 
   clipList.querySelectorAll('[data-remove]').forEach(btn => {
@@ -363,38 +439,21 @@ function renderClips() {
       if (c) c.telop = inp.value;
     });
   });
-  clipList.querySelectorAll('[data-dur]').forEach(inp => {
-    inp.addEventListener('input', () => {
-      const c = clips.find(c => c.id === inp.dataset.dur);
-      if (c) c.dur = parseFloat(inp.value);
-      clipList.querySelector(`[data-durlabel="${inp.dataset.dur}"]`).textContent = c.dur.toFixed(1) + '秒';
-      const startInput = clipList.querySelector(`[data-start="${inp.dataset.dur}"]`);
-      const maxStart = Math.max(0, c.srcDuration - c.dur);
-      startInput.max = maxStart.toFixed(1);
-      if (c.start > maxStart) { c.start = maxStart; startInput.value = maxStart; }
-      updateTotal();
-    });
-  });
-  clipList.querySelectorAll('[data-start]').forEach(inp => {
-    inp.addEventListener('input', () => {
-      const c = clips.find(c => c.id === inp.dataset.start);
-      if (c) c.start = parseFloat(inp.value);
-      clipList.querySelector(`[data-startlabel="${inp.dataset.start}"]`).textContent = c.start.toFixed(1) + '秒';
-    });
-  });
 
   updateTotal();
   updateStep1Badge();
 }
 
 function updateTotal() {
-  const total = clips.reduce((s, c) => s + c.dur, 0);
   if (clips.length === 0) { totalDurEl.textContent = ''; buildBtn.disabled = true; buildBtn.textContent = '動画をアップロードしてください'; return; }
-  totalDurEl.textContent = `合計 ${total.toFixed(1)} 秒（目安 ${TARGET_TOTAL} 秒）`;
-  totalDurEl.className = 'total-dur ' + (Math.abs(total - TARGET_TOTAL) <= 3 ? 'ok' : 'warn');
+  const stillAnalyzing = clips.some(c => c.analyzing);
+  const total = clips.reduce((s, c) => s + (c.dur || 0), 0);
+  totalDurEl.textContent = stillAnalyzing ? '動画を解析しています…' : `使用予定の合計 約${total.toFixed(1)}秒`;
   const enoughClips = clips.length >= 3 && clips.length <= 5;
-  buildBtn.disabled = !enoughClips;
-  buildBtn.textContent = enoughClips ? '動画を作成する' : 'あと' + (3 - clips.length) + '本、動画を追加してください';
+  buildBtn.disabled = !enoughClips || stillAnalyzing;
+  buildBtn.textContent = stillAnalyzing
+    ? '動画を解析しています…'
+    : (enoughClips ? '動画を作成する' : 'あと' + (3 - clips.length) + '本、動画を追加してください');
 }
 
 function updateStep1Badge() {
@@ -577,8 +636,9 @@ async function runBuild() {
       }
     }
 
-    // Trim + scale/crop each clip to OUT_W x OUT_H, overlay its caption
+    // Trim + scale/crop each clip to OUT_W x OUT_H, overlay its caption (centered)
     statusLine.textContent = '各カットを整形中…';
+    const CAPTION_H = 260;
     const segmentFiles = [];
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
@@ -591,22 +651,54 @@ async function runBuild() {
       let filter = `[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},setsar=1,fps=30[base]`;
       if (captionFiles.includes(i)) {
         args.push('-i', `cap${i}.png`);
-        filter += `;[base][1:v]overlay=0:${OUT_H - 340}[v]`;
+        const capY = Math.round((OUT_H - CAPTION_H) / 2);
+        filter += `;[base][1:v]overlay=0:${capY}[v]`;
       } else {
         filter += `;[base]null[v]`;
       }
       args.push('-filter_complex', filter, '-map', '[v]');
-      args.push('-an'); // strip original audio for now (BGM handles sound)
+      args.push('-an'); // video-only; audio is built as a separate track below
       args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', outName);
       await ffmpeg.exec(args);
       segmentFiles.push(outName);
     }
 
-    // Concat
+    // Concat video-only
     statusLine.textContent = 'カットをつなげています…';
     const listContent = segmentFiles.map(f => `file '${f}'`).join('\n');
     await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listContent));
-    const concatArgs = ['-f', 'concat', '-safe', '0', '-i', 'list.txt'];
+
+    // ---- Audio track (built separately so mismatched/missing source audio
+    // never breaks the video concat) ----
+    const useOrigAudio = origAudioToggle.checked;
+    let audioTrackReady = false;
+
+    if (useOrigAudio) {
+      statusLine.textContent = '元動画の音声を準備中…';
+      const audioSegFiles = [];
+      for (let i = 0; i < clips.length; i++) {
+        const c = clips[i];
+        const segName = `aud${i}.m4a`;
+        try {
+          await ffmpeg.exec([
+            '-ss', String(c.start), '-i', `src${i}.mp4`, '-t', String(c.dur),
+            '-vn', '-c:a', 'aac', '-ar', '44100', '-ac', '2', segName,
+          ]);
+        } catch (e) {
+          // This clip has no audio track (or it's unreadable) — fill with silence
+          // so the timing of every clip's audio still lines up.
+          await ffmpeg.exec([
+            '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', String(c.dur),
+            '-c:a', 'aac', segName,
+          ]);
+        }
+        audioSegFiles.push(segName);
+      }
+      const audioListContent = audioSegFiles.map(f => `file '${f}'`).join('\n');
+      await ffmpeg.writeFile('audiolist.txt', new TextEncoder().encode(audioListContent));
+      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'audiolist.txt', '-c', 'copy', 'orig_audio.m4a']);
+      audioTrackReady = true;
+    }
 
     let bgmData = null;
     if (bgmFile) {
@@ -615,21 +707,38 @@ async function runBuild() {
       await ffmpeg.writeFile('bgm_src', bgmData);
     }
 
-    if (bgmFile) {
+    let finalAudioFile = null;
+    if (audioTrackReady && bgmFile) {
       const vol = document.getElementById('bgmVol').value / 100;
-      concatArgs.push('-i', 'bgm_src');
-      concatArgs.push('-filter_complex', `[1:a]volume=${vol}[a]`);
-      concatArgs.push('-map', '0:v', '-map', '[a]');
-      concatArgs.push('-shortest');
-    } else {
-      concatArgs.push('-map', '0:v');
+      await ffmpeg.exec([
+        '-i', 'orig_audio.m4a', '-i', 'bgm_src',
+        '-filter_complex', `[1:a]volume=${vol}[bgmv];[0:a][bgmv]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+        '-map', '[a]', '-c:a', 'aac', '-b:a', '128k', 'final_audio.m4a',
+      ]);
+      finalAudioFile = 'final_audio.m4a';
+    } else if (audioTrackReady) {
+      finalAudioFile = 'orig_audio.m4a';
+    } else if (bgmFile) {
+      const vol = document.getElementById('bgmVol').value / 100;
+      await ffmpeg.exec([
+        '-i', 'bgm_src', '-filter_complex', `[0:a]volume=${vol}[a]`,
+        '-map', '[a]', '-c:a', 'aac', '-b:a', '128k', 'final_audio.m4a',
+      ]);
+      finalAudioFile = 'final_audio.m4a';
     }
-    concatArgs.push('-c:v', 'copy');
-    if (bgmFile) concatArgs.push('-c:a', 'aac', '-b:a', '128k');
-    concatArgs.push('output.mp4');
 
+    // Mux video + (optional) audio
     statusLine.textContent = '書き出し中…';
-    await ffmpeg.exec(concatArgs);
+    const muxArgs = ['-f', 'concat', '-safe', '0', '-i', 'list.txt'];
+    if (finalAudioFile) {
+      muxArgs.push('-i', finalAudioFile);
+      muxArgs.push('-map', '0:v', '-map', '1:a', '-shortest');
+      muxArgs.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k');
+    } else {
+      muxArgs.push('-map', '0:v', '-c:v', 'copy');
+    }
+    muxArgs.push('output.mp4');
+    await ffmpeg.exec(muxArgs);
 
     const outData = await ffmpeg.readFile('output.mp4');
     const blob = new Blob([outData.buffer], { type: 'video/mp4' });
