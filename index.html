@@ -1,3 +1,8 @@
+export const ERROR_UNKNOWN_MESSAGE_TYPE = new Error("unknown message type");
+export const ERROR_NOT_LOADED = new Error("ffmpeg is not loaded, call `await ffmpeg.load()` first");
+export const ERROR_TERMINATED = new Error("called FFmpeg.terminate()");
+export const ERROR_IMPORT_FAILURE = new Error("failed to import ffmpeg-core.js");
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -501,12 +506,10 @@ async function ensureFFmpeg() {
   });
 
   const coreBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
-  const ffmpegBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 
   const files = [
-    { url: `${coreBaseURL}/ffmpeg-core.js`, mime: 'text/javascript', label: '動画エンジン(1/3)' },
-    { url: `${coreBaseURL}/ffmpeg-core.wasm`, mime: 'application/wasm', label: '動画エンジン(2/3・本体約30MB)' },
-    { url: `${ffmpegBaseURL}/worker.js`, mime: 'text/javascript', label: '動画エンジン(3/3)' },
+    { url: `${coreBaseURL}/ffmpeg-core.js`, mime: 'text/javascript', label: '動画エンジン(1/2)' },
+    { url: `${coreBaseURL}/ffmpeg-core.wasm`, mime: 'application/wasm', label: '動画エンジン(2/2・本体約30MB)' },
   ];
   const blobUrls = [];
   for (const f of files) {
@@ -519,12 +522,32 @@ async function ensureFFmpeg() {
     blobUrls.push(URL.createObjectURL(blob));
   }
 
+  // classWorkerURL must be same-origin (not a blob of the CDN's worker.js):
+  // that worker.js does `import ... from "./const.js"`, and relative imports
+  // cannot resolve from inside a blob: URL, which caused a silent, un-erroring
+  // hang. We host our own copy of worker.js (+ const.js/errors.js) alongside
+  // this page so those relative imports resolve normally over real HTTP.
+  const classWorkerURL = new URL('vendor/worker.js', location.href).href;
+
   statusLine.textContent = '動画エンジンを起動中…';
-  await ffmpeg.load({
-    coreURL: blobUrls[0],
-    wasmURL: blobUrls[1],
-    classWorkerURL: blobUrls[2],
-  });
+  const startupTimer = setTimeout(() => {
+    statusLine.textContent = '起動に時間がかかっています…（このまま数十秒お待ちください）';
+  }, 8000);
+  try {
+    await Promise.race([
+      ffmpeg.load({
+        coreURL: blobUrls[0],
+        wasmURL: blobUrls[1],
+        classWorkerURL,
+      }),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('動画エンジンの起動が60秒たっても完了しませんでした。ページを再読み込みして、もう一度お試しください。')),
+        60000
+      )),
+    ]);
+  } finally {
+    clearTimeout(startupTimer);
+  }
   ffmpegReady = true;
 }
 
@@ -637,3 +660,178 @@ renderClips();
 </script>
 </body>
 </html>
+
+/// <reference no-default-lib="true" />
+/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+import { CORE_URL, FFMessageType } from "./const.js";
+import { ERROR_UNKNOWN_MESSAGE_TYPE, ERROR_NOT_LOADED, ERROR_IMPORT_FAILURE, } from "./errors.js";
+let ffmpeg;
+const load = async ({ coreURL: _coreURL, wasmURL: _wasmURL, workerURL: _workerURL, }) => {
+    const first = !ffmpeg;
+    try {
+        if (!_coreURL)
+            _coreURL = CORE_URL;
+        // when web worker type is `classic`.
+        importScripts(_coreURL);
+    }
+    catch {
+        if (!_coreURL)
+            _coreURL = CORE_URL.replace('/umd/', '/esm/');
+        // when web worker type is `module`.
+        self.createFFmpegCore = (await import(
+        /* webpackIgnore: true */ /* @vite-ignore */ _coreURL)).default;
+        if (!self.createFFmpegCore) {
+            throw ERROR_IMPORT_FAILURE;
+        }
+    }
+    const coreURL = _coreURL;
+    const wasmURL = _wasmURL ? _wasmURL : _coreURL.replace(/.js$/g, ".wasm");
+    const workerURL = _workerURL
+        ? _workerURL
+        : _coreURL.replace(/.js$/g, ".worker.js");
+    ffmpeg = await self.createFFmpegCore({
+        // Fix `Overload resolution failed.` when using multi-threaded ffmpeg-core.
+        // Encoded wasmURL and workerURL in the URL as a hack to fix locateFile issue.
+        mainScriptUrlOrBlob: `${coreURL}#${btoa(JSON.stringify({ wasmURL, workerURL }))}`,
+    });
+    ffmpeg.setLogger((data) => self.postMessage({ type: FFMessageType.LOG, data }));
+    ffmpeg.setProgress((data) => self.postMessage({
+        type: FFMessageType.PROGRESS,
+        data,
+    }));
+    return first;
+};
+const exec = ({ args, timeout = -1 }) => {
+    ffmpeg.setTimeout(timeout);
+    ffmpeg.exec(...args);
+    const ret = ffmpeg.ret;
+    ffmpeg.reset();
+    return ret;
+};
+const writeFile = ({ path, data }) => {
+    ffmpeg.FS.writeFile(path, data);
+    return true;
+};
+const readFile = ({ path, encoding }) => ffmpeg.FS.readFile(path, { encoding });
+// TODO: check if deletion works.
+const deleteFile = ({ path }) => {
+    ffmpeg.FS.unlink(path);
+    return true;
+};
+const rename = ({ oldPath, newPath }) => {
+    ffmpeg.FS.rename(oldPath, newPath);
+    return true;
+};
+// TODO: check if creation works.
+const createDir = ({ path }) => {
+    ffmpeg.FS.mkdir(path);
+    return true;
+};
+const listDir = ({ path }) => {
+    const names = ffmpeg.FS.readdir(path);
+    const nodes = [];
+    for (const name of names) {
+        const stat = ffmpeg.FS.stat(`${path}/${name}`);
+        const isDir = ffmpeg.FS.isDir(stat.mode);
+        nodes.push({ name, isDir });
+    }
+    return nodes;
+};
+// TODO: check if deletion works.
+const deleteDir = ({ path }) => {
+    ffmpeg.FS.rmdir(path);
+    return true;
+};
+const mount = ({ fsType, options, mountPoint }) => {
+    const str = fsType;
+    const fs = ffmpeg.FS.filesystems[str];
+    if (!fs)
+        return false;
+    ffmpeg.FS.mount(fs, options, mountPoint);
+    return true;
+};
+const unmount = ({ mountPoint }) => {
+    ffmpeg.FS.unmount(mountPoint);
+    return true;
+};
+self.onmessage = async ({ data: { id, type, data: _data }, }) => {
+    const trans = [];
+    let data;
+    try {
+        if (type !== FFMessageType.LOAD && !ffmpeg)
+            throw ERROR_NOT_LOADED; // eslint-disable-line
+        switch (type) {
+            case FFMessageType.LOAD:
+                data = await load(_data);
+                break;
+            case FFMessageType.EXEC:
+                data = exec(_data);
+                break;
+            case FFMessageType.WRITE_FILE:
+                data = writeFile(_data);
+                break;
+            case FFMessageType.READ_FILE:
+                data = readFile(_data);
+                break;
+            case FFMessageType.DELETE_FILE:
+                data = deleteFile(_data);
+                break;
+            case FFMessageType.RENAME:
+                data = rename(_data);
+                break;
+            case FFMessageType.CREATE_DIR:
+                data = createDir(_data);
+                break;
+            case FFMessageType.LIST_DIR:
+                data = listDir(_data);
+                break;
+            case FFMessageType.DELETE_DIR:
+                data = deleteDir(_data);
+                break;
+            case FFMessageType.MOUNT:
+                data = mount(_data);
+                break;
+            case FFMessageType.UNMOUNT:
+                data = unmount(_data);
+                break;
+            default:
+                throw ERROR_UNKNOWN_MESSAGE_TYPE;
+        }
+    }
+    catch (e) {
+        self.postMessage({
+            id,
+            type: FFMessageType.ERROR,
+            data: e.toString(),
+        });
+        return;
+    }
+    if (data instanceof Uint8Array) {
+        trans.push(data.buffer);
+    }
+    self.postMessage({ id, type, data }, trans);
+};
+
+export const MIME_TYPE_JAVASCRIPT = "text/javascript";
+export const MIME_TYPE_WASM = "application/wasm";
+export const CORE_VERSION = "0.12.6";
+export const CORE_URL = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd/ffmpeg-core.js`;
+export var FFMessageType;
+(function (FFMessageType) {
+    FFMessageType["LOAD"] = "LOAD";
+    FFMessageType["EXEC"] = "EXEC";
+    FFMessageType["WRITE_FILE"] = "WRITE_FILE";
+    FFMessageType["READ_FILE"] = "READ_FILE";
+    FFMessageType["DELETE_FILE"] = "DELETE_FILE";
+    FFMessageType["RENAME"] = "RENAME";
+    FFMessageType["CREATE_DIR"] = "CREATE_DIR";
+    FFMessageType["LIST_DIR"] = "LIST_DIR";
+    FFMessageType["DELETE_DIR"] = "DELETE_DIR";
+    FFMessageType["ERROR"] = "ERROR";
+    FFMessageType["DOWNLOAD"] = "DOWNLOAD";
+    FFMessageType["PROGRESS"] = "PROGRESS";
+    FFMessageType["LOG"] = "LOG";
+    FFMessageType["MOUNT"] = "MOUNT";
+    FFMessageType["UNMOUNT"] = "UNMOUNT";
+})(FFMessageType || (FFMessageType = {}));
