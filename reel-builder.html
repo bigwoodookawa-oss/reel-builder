@@ -453,7 +453,7 @@ async function ensureFFmpeg() {
   ffmpeg.on('progress', ({ progress }) => {
     progressBar.style.width = Math.min(100, Math.round(progress * 100)) + '%';
   });
-  const coreBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+  const coreBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
   const ffmpegBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
   await ffmpeg.load({
     coreURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.js`, 'text/javascript'),
