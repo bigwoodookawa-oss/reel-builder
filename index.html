@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>商品リール作成</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Zen+Old+Mincho:wght@400;700;900&family=Zen+Maru+Gothic:wght@400;500;700;900&family=Mochiy+Pop+One&family=Klee+One:wght@400;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
     --ink:#20211d;
@@ -77,6 +77,9 @@
   .step-body{margin-left:34px;}
 
   .drop{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
     border:1.5px dashed var(--line);
     background:#fff;
     padding:22px;
@@ -123,6 +126,26 @@
   }
   input[type="text"]:focus{outline:2px solid var(--gold);outline-offset:-1px;}
   .range-vals{font-family:'Space Mono',monospace;font-size:11px;color:#5c5847;}
+
+  select{
+    width:100%;
+    border:1px solid var(--line);
+    padding:8px 9px;
+    font-family:inherit;
+    font-size:14px;
+    background:var(--paper);
+    color:var(--ink);
+  }
+  select:focus{outline:2px solid var(--gold);outline-offset:-1px;}
+  .telop-style-row{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:14px;
+    margin-top:16px;
+    background:#fff;
+    border:1px solid var(--line);
+    padding:14px;
+  }
 
   .bgm-row{
     display:flex;align-items:center;gap:10px;
@@ -210,8 +233,26 @@
         <div>タップして動画を選択</div>
         <div class="hint">またはここにドラッグ＆ドロップ</div>
       </label>
+
       <div class="clip-list" id="clipList"></div>
       <div class="total-dur" id="totalDur"></div>
+
+      <div class="telop-style-row">
+        <div class="field-row">
+          <label>テロップの書体</label>
+          <select id="telopFontSelect">
+            <option value="'Zen Kaku Gothic New', sans-serif">ゴシック体</option>
+            <option value="'Zen Old Mincho', serif">明朝体</option>
+            <option value="'Zen Maru Gothic', sans-serif">丸ゴシック</option>
+            <option value="'Mochiy Pop One', sans-serif">ポップ体</option>
+            <option value="'Klee One', cursive">手書き風</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label>テロップの大きさ：<span id="telopSizeLabel">3</span></label>
+          <input type="range" id="telopSizeRange" min="1" max="5" step="1" value="3">
+        </div>
+      </div>
     </div>
   </div>
 
@@ -286,6 +327,12 @@ const bgmBtn = document.getElementById('bgmBtn');
 const bgmName = document.getElementById('bgmName');
 
 const origAudioToggle = document.getElementById('origAudioToggle');
+const telopFontSelect = document.getElementById('telopFontSelect');
+const telopSizeRange = document.getElementById('telopSizeRange');
+const telopSizeLabel = document.getElementById('telopSizeLabel');
+telopSizeRange.addEventListener('input', () => {
+  telopSizeLabel.textContent = telopSizeRange.value;
+});
 
 const bgmVolInput = document.getElementById('bgmVol');
 const bgmVolLabel = document.getElementById('bgmVolLabel');
@@ -461,7 +508,10 @@ function updateStep1Badge() {
 }
 
 // ---- Caption image generation (Canvas -> PNG) ----
-function makeCaptionPNG(text) {
+const TELOP_SIZE_PX = { 1: 38, 2: 48, 3: 58, 4: 70, 5: 84 };
+
+function makeCaptionPNG(text, fontFamily, sizeLevel) {
+  const fontPx = TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3];
   const canvas = document.createElement('canvas');
   canvas.width = OUT_W;
   canvas.height = 260;
@@ -469,7 +519,7 @@ function makeCaptionPNG(text) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!text) return canvas;
 
-  ctx.font = "700 64px 'Zen Kaku Gothic New', sans-serif";
+  ctx.font = `700 ${fontPx}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -478,14 +528,14 @@ function makeCaptionPNG(text) {
   const metrics = ctx.measureText(text);
   const padX = 48, padY = 26;
   const boxW = Math.min(canvas.width - 80, metrics.width + padX * 2);
-  const boxH = 64 + padY * 2;
+  const boxH = fontPx + padY * 2;
 
   ctx.fillStyle = 'rgba(20,19,15,0.82)';
   roundRect(ctx, cx - boxW / 2, cy - boxH / 2, boxW, boxH, 6);
   ctx.fill();
 
   ctx.fillStyle = '#f6f2e9';
-  ctx.font = "700 56px 'Zen Kaku Gothic New', sans-serif";
+  ctx.font = `700 ${fontPx}px ${fontFamily}`;
   ctx.fillText(text, cx, cy + 2);
 
   return canvas;
@@ -624,11 +674,18 @@ async function runBuild() {
     }
 
     // Write caption PNGs
+    const chosenFont = telopFontSelect.value;
+    const chosenSize = parseInt(telopSizeRange.value, 10);
+    try {
+      await document.fonts.load(`700 ${TELOP_SIZE_PX[chosenSize]}px ${chosenFont}`);
+      await document.fonts.ready;
+    } catch (e) { /* fall back to default rendering if font load fails */ }
+
     const captionFiles = [];
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
       if (c.telop && c.telop.trim()) {
-        const canvas = makeCaptionPNG(c.telop.trim());
+        const canvas = makeCaptionPNG(c.telop.trim(), chosenFont, chosenSize);
         const blob = await canvasToPNGBlob(canvas);
         const buf = new Uint8Array(await blob.arrayBuffer());
         await ffmpeg.writeFile(`cap${i}.png`, buf);
@@ -636,9 +693,13 @@ async function runBuild() {
       }
     }
 
-    // Trim + scale/crop each clip to OUT_W x OUT_H, overlay its caption (centered)
+    // Build each clip as ONE combined segment (video+caption+audio together,
+    // using the identical -ss/-t for both streams in a single ffmpeg call).
+    // Doing video and audio as separate passes previously caused a slight
+    // per-clip drift that accumulated into audio/video falling out of sync.
     statusLine.textContent = '各カットを整形中…';
     const CAPTION_H = 260;
+    const useOrigAudio = origAudioToggle.checked;
     const segmentFiles = [];
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
@@ -657,48 +718,21 @@ async function runBuild() {
         filter += `;[base]null[v]`;
       }
       args.push('-filter_complex', filter, '-map', '[v]');
-      args.push('-an'); // video-only; audio is built as a separate track below
+      if (useOrigAudio) {
+        args.push('-map', '0:a:0?', '-c:a', 'aac', '-ar', '44100', '-ac', '2');
+      } else {
+        args.push('-an');
+      }
       args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', outName);
       await ffmpeg.exec(args);
       segmentFiles.push(outName);
     }
 
-    // Concat video-only
+    // Concat all segments (video, and audio if present) in one pass.
     statusLine.textContent = 'カットをつなげています…';
     const listContent = segmentFiles.map(f => `file '${f}'`).join('\n');
     await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listContent));
-
-    // ---- Audio track (built separately so mismatched/missing source audio
-    // never breaks the video concat) ----
-    const useOrigAudio = origAudioToggle.checked;
-    let audioTrackReady = false;
-
-    if (useOrigAudio) {
-      statusLine.textContent = '元動画の音声を準備中…';
-      const audioSegFiles = [];
-      for (let i = 0; i < clips.length; i++) {
-        const c = clips[i];
-        const segName = `aud${i}.m4a`;
-        try {
-          await ffmpeg.exec([
-            '-ss', String(c.start), '-i', `src${i}.mp4`, '-t', String(c.dur),
-            '-vn', '-c:a', 'aac', '-ar', '44100', '-ac', '2', segName,
-          ]);
-        } catch (e) {
-          // This clip has no audio track (or it's unreadable) — fill with silence
-          // so the timing of every clip's audio still lines up.
-          await ffmpeg.exec([
-            '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', String(c.dur),
-            '-c:a', 'aac', segName,
-          ]);
-        }
-        audioSegFiles.push(segName);
-      }
-      const audioListContent = audioSegFiles.map(f => `file '${f}'`).join('\n');
-      await ffmpeg.writeFile('audiolist.txt', new TextEncoder().encode(audioListContent));
-      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'audiolist.txt', '-c', 'copy', 'orig_audio.m4a']);
-      audioTrackReady = true;
-    }
+    await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'combined.mp4']);
 
     let bgmData = null;
     if (bgmFile) {
@@ -707,38 +741,26 @@ async function runBuild() {
       await ffmpeg.writeFile('bgm_src', bgmData);
     }
 
-    let finalAudioFile = null;
-    if (audioTrackReady && bgmFile) {
-      const vol = document.getElementById('bgmVol').value / 100;
-      await ffmpeg.exec([
-        '-i', 'orig_audio.m4a', '-i', 'bgm_src',
-        '-filter_complex', `[1:a]volume=${vol}[bgmv];[0:a][bgmv]amix=inputs=2:duration=first:dropout_transition=0[a]`,
-        '-map', '[a]', '-c:a', 'aac', '-b:a', '128k', 'final_audio.m4a',
-      ]);
-      finalAudioFile = 'final_audio.m4a';
-    } else if (audioTrackReady) {
-      finalAudioFile = 'orig_audio.m4a';
-    } else if (bgmFile) {
-      const vol = document.getElementById('bgmVol').value / 100;
-      await ffmpeg.exec([
-        '-i', 'bgm_src', '-filter_complex', `[0:a]volume=${vol}[a]`,
-        '-map', '[a]', '-c:a', 'aac', '-b:a', '128k', 'final_audio.m4a',
-      ]);
-      finalAudioFile = 'final_audio.m4a';
-    }
-
-    // Mux video + (optional) audio
+    // Mux in BGM if provided (mixing with original audio, or standalone).
     statusLine.textContent = '書き出し中…';
-    const muxArgs = ['-f', 'concat', '-safe', '0', '-i', 'list.txt'];
-    if (finalAudioFile) {
-      muxArgs.push('-i', finalAudioFile);
-      muxArgs.push('-map', '0:v', '-map', '1:a', '-shortest');
-      muxArgs.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k');
+    if (bgmFile) {
+      const vol = document.getElementById('bgmVol').value / 100;
+      if (useOrigAudio) {
+        await ffmpeg.exec([
+          '-i', 'combined.mp4', '-i', 'bgm_src',
+          '-filter_complex', `[1:a]volume=${vol}[bgmv];[0:a][bgmv]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+          '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', 'output.mp4',
+        ]);
+      } else {
+        await ffmpeg.exec([
+          '-i', 'combined.mp4', '-i', 'bgm_src',
+          '-filter_complex', `[1:a]volume=${vol}[a]`,
+          '-map', '0:v', '-map', '[a]', '-shortest', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', 'output.mp4',
+        ]);
+      }
     } else {
-      muxArgs.push('-map', '0:v', '-c:v', 'copy');
+      await ffmpeg.exec(['-i', 'combined.mp4', '-c', 'copy', 'output.mp4']);
     }
-    muxArgs.push('output.mp4');
-    await ffmpeg.exec(muxArgs);
 
     const outData = await ffmpeg.readFile('output.mp4');
     const blob = new Blob([outData.buffer], { type: 'video/mp4' });
