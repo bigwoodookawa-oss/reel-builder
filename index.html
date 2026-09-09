@@ -217,8 +217,8 @@
 <div class="wrap">
 
   <header class="top">
-    <h1>BWショート動画作成</h1>
-    <div class="tag">ブラウザ内で処理 / サーバー不使用　/ 作：吉永</div>
+    <h1>商品リール作成</h1>
+    <div class="tag">ブラウザ内で処理 / サーバー不使用</div>
   </header>
 
   <div class="step">
@@ -387,7 +387,36 @@ function seekTo(video, t) {
   });
 }
 
+// Some phone-recorded videos (certain codecs/containers) report an invalid
+// duration (Infinity or NaN) until the browser is forced to recompute it.
+// This is a known workaround: seek far past the end once, then back to 0.
+function getReliableDuration(video) {
+  if (isFinite(video.duration) && video.duration > 0) {
+    return Promise.resolve(video.duration);
+  }
+  return new Promise((resolve) => {
+    const onUpdate = () => {
+      video.removeEventListener('timeupdate', onUpdate);
+      video.currentTime = 0;
+      resolve(isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
+    };
+    video.addEventListener('timeupdate', onUpdate);
+    video.currentTime = 1e101;
+    // Safety net: some browsers never fire timeupdate for this trick.
+    setTimeout(() => { onUpdate(); }, 3000);
+  });
+}
+
+const ANALYZE_TIMEOUT_MS = 45000;
+
 async function analyzeClip(clip) {
+  await Promise.race([
+    analyzeClipInner(clip),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('analyze timeout')), ANALYZE_TIMEOUT_MS)),
+  ]);
+}
+
+async function analyzeClipInner(clip) {
   const video = document.createElement('video');
   video.src = clip.url;
   video.muted = true;
@@ -397,7 +426,16 @@ async function analyzeClip(clip) {
     video.onloadedmetadata = resolve;
     video.onerror = () => reject(new Error('load failed'));
   });
-  const duration = video.duration || 3;
+
+  const duration = await getReliableDuration(video);
+  if (!duration || !isFinite(duration)) {
+    // Couldn't determine a real length — fall back to a safe, fixed clip
+    // rather than risk an endless search over an unknown/huge range.
+    clip.srcDuration = 0;
+    clip.start = 0;
+    clip.dur = 4;
+    return;
+  }
   clip.srcDuration = duration;
 
   // Trim off the shaky first/last 0.5s (raising/lowering the camera).
