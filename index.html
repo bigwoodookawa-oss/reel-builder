@@ -146,6 +146,18 @@
     border:1px solid var(--line);
     padding:14px;
   }
+  .swatch-row{display:flex;gap:10px;flex-wrap:wrap;}
+  .swatch{
+    width:34px;height:34px;
+    border-radius:50%;
+    border:2px solid var(--line);
+    cursor:pointer;
+    padding:0;
+    display:flex;align-items:center;justify-content:center;
+    background:#fff;
+  }
+  .swatch.active{border-color:var(--ink);box-shadow:0 0 0 2px var(--paper), 0 0 0 4px var(--ink);}
+  .swatch-x{font-size:16px;color:#8a8368;line-height:1;}
 
   .bgm-row{
     display:flex;align-items:center;gap:10px;
@@ -252,6 +264,22 @@
           <label>テロップの大きさ：<span id="telopSizeLabel">3</span></label>
           <input type="range" id="telopSizeRange" min="1" max="5" step="1" value="3">
         </div>
+        <div class="field-row" style="grid-column:1 / -1;">
+          <label style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="telopBgToggle" checked> テロップに背景をつける
+          </label>
+        </div>
+        <div class="field-row" style="grid-column:1 / -1;">
+          <label>文字の縁取り</label>
+          <div class="swatch-row" id="outlineSwatches">
+            <button type="button" class="swatch active" data-color="none" title="なし"><span class="swatch-x">×</span></button>
+            <button type="button" class="swatch" data-color="#000000" style="background:#000000;" title="黒"></button>
+            <button type="button" class="swatch" data-color="#c98f2b" style="background:#c98f2b;" title="ゴールド"></button>
+            <button type="button" class="swatch" data-color="#c0392b" style="background:#c0392b;" title="レッド"></button>
+            <button type="button" class="swatch" data-color="#2b5fc0" style="background:#2b5fc0;" title="ブルー"></button>
+            <button type="button" class="swatch" data-color="#2f7d4f" style="background:#2f7d4f;" title="グリーン"></button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -334,8 +362,19 @@ const origAudioToggle = document.getElementById('origAudioToggle');
 const telopFontSelect = document.getElementById('telopFontSelect');
 const telopSizeRange = document.getElementById('telopSizeRange');
 const telopSizeLabel = document.getElementById('telopSizeLabel');
+const telopBgToggle = document.getElementById('telopBgToggle');
 telopSizeRange.addEventListener('input', () => {
   telopSizeLabel.textContent = telopSizeRange.value;
+});
+
+let telopOutlineColor = 'none';
+const outlineSwatches = document.getElementById('outlineSwatches');
+outlineSwatches.querySelectorAll('.swatch').forEach(btn => {
+  btn.addEventListener('click', () => {
+    telopOutlineColor = btn.dataset.color;
+    outlineSwatches.querySelectorAll('.swatch').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
 });
 
 const audioVolInput = document.getElementById('audioVol');
@@ -592,7 +631,7 @@ function wrapCaptionText(ctx, text, maxWidth) {
   return lines.slice(0, TELOP_MAX_LINES);
 }
 
-function makeCaptionPNG(text, fontFamily, sizeLevel) {
+function makeCaptionPNG(text, fontFamily, sizeLevel, bgOn, outlineColor) {
   const scale = OUT_W / 1080;
   const fontPx = Math.round((TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3]) * scale);
   const lineHeight = Math.round(fontPx * 1.28);
@@ -607,7 +646,7 @@ function makeCaptionPNG(text, fontFamily, sizeLevel) {
   const lines = text ? wrapCaptionText(mctx, text, maxTextWidth) : [];
 
   const boxH = lines.length ? lines.length * lineHeight + padY * 2 : 0;
-  const canvasH = Math.max(boxH + 20, 40); // small margin so the box isn't clipped
+  const canvasH = Math.max(boxH + 20, 40); // small margin so text/outline isn't clipped
   const canvas = document.createElement('canvas');
   canvas.width = OUT_W;
   canvas.height = canvasH;
@@ -618,6 +657,7 @@ function makeCaptionPNG(text, fontFamily, sizeLevel) {
   ctx.font = `700 ${fontPx}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
 
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
@@ -625,15 +665,24 @@ function makeCaptionPNG(text, fontFamily, sizeLevel) {
   for (const l of lines) maxLineWidth = Math.max(maxLineWidth, ctx.measureText(l).width);
   const boxW = Math.min(canvas.width - 80 * scale, maxLineWidth + padX * 2);
 
-  ctx.fillStyle = 'rgba(20,19,15,0.5)';
-  roundRect(ctx, cx - boxW / 2, cy - boxH / 2, boxW, boxH, 6);
-  ctx.fill();
+  if (bgOn) {
+    ctx.fillStyle = 'rgba(20,19,15,0.5)';
+    roundRect(ctx, cx - boxW / 2, cy - boxH / 2, boxW, boxH, 6);
+    ctx.fill();
+  }
 
-  ctx.fillStyle = '#f6f2e9';
   ctx.font = `700 ${fontPx}px ${fontFamily}`;
   const firstLineY = cy - ((lines.length - 1) * lineHeight) / 2;
+  const hasOutline = outlineColor && outlineColor !== 'none';
+  if (hasOutline) {
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = Math.max(2, Math.round(fontPx * 0.12));
+  }
+  ctx.fillStyle = '#ffffff';
   lines.forEach((line, idx) => {
-    ctx.fillText(line, cx, firstLineY + idx * lineHeight + 2);
+    const y = firstLineY + idx * lineHeight + 2;
+    if (hasOutline) ctx.strokeText(line, cx, y);
+    ctx.fillText(line, cx, y);
   });
 
   return canvas;
@@ -777,6 +826,8 @@ async function runBuild() {
     // Write caption PNGs
     const chosenFont = telopFontSelect.value;
     const chosenSize = parseInt(telopSizeRange.value, 10);
+    const chosenBgOn = telopBgToggle.checked;
+    const chosenOutline = telopOutlineColor;
     try {
       await document.fonts.load(`700 ${TELOP_SIZE_PX[chosenSize]}px ${chosenFont}`);
       await document.fonts.ready;
@@ -786,7 +837,7 @@ async function runBuild() {
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i];
       if (c.telop && c.telop.trim()) {
-        const canvas = makeCaptionPNG(c.telop.trim(), chosenFont, chosenSize);
+        const canvas = makeCaptionPNG(c.telop.trim(), chosenFont, chosenSize, chosenBgOn, chosenOutline);
         c.capHeight = canvas.height;
         const blob = await canvasToPNGBlob(canvas);
         const buf = new Uint8Array(await blob.arrayBuffer());
@@ -800,7 +851,7 @@ async function runBuild() {
     // Doing video and audio as separate passes previously caused a slight
     // per-clip drift that accumulated into audio/video falling out of sync.
     statusLine.textContent = '各カットを整形中…';
-    const TELOP_CENTER_FRACTION = 0.42; // slightly above true center
+    const TELOP_CENTER_FRACTION = 0.37;
     const useOrigAudio = origAudioToggle.checked;
     const segmentFiles = [];
     for (let i = 0; i < clips.length; i++) {
