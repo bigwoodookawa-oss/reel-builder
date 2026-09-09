@@ -261,7 +261,7 @@
       <div class="step-num" id="num2">2</div>
       <div class="step-title">音声</div>
     </div>
-    <div class="step-sub">元動画の音とBGM、必要な方をオンにしてください</div>
+    <div class="step-sub">動画本来の音を使うか選んでください</div>
     <div class="step-body">
       <div class="bgm-row" style="margin-bottom:12px;">
         <span class="name">動画本来の音を使う</span>
@@ -269,14 +269,9 @@
           <input type="checkbox" id="origAudioToggle">ON
         </label>
       </div>
-      <div class="bgm-row">
-        <input type="file" id="bgmInput" accept="audio/*" style="display:none">
-        <span class="name" id="bgmName">BGM：未選択</span>
-        <button class="btn-ghost" id="bgmBtn">選ぶ</button>
-      </div>
-      <div class="field-row" style="margin-top:10px;">
-        <label>BGMの音量：<span class="range-vals" id="bgmVolLabel">60%</span>（動画に流す大きさ。0で無音、100で最大）</label>
-        <input type="range" id="bgmVol" min="0" max="100" value="60">
+      <div class="field-row">
+        <label>音量：<span class="range-vals" id="audioVolLabel">100%</span></label>
+        <input type="range" id="audioVol" min="0" max="150" value="100">
       </div>
     </div>
   </div>
@@ -286,7 +281,7 @@
       <div class="step-num" id="num3">3</div>
       <div class="step-title">結合して書き出し</div>
     </div>
-    <div class="step-sub">Reels縦型のmp4を作成します（長さはアップロードした動画に応じて自動で決まります・最大10秒/本）</div>
+    <div class="step-sub">縦型動画を作成します（長さはアップロードした動画に応じて変わります）</div>
     <div class="step-body">
       <div class="field-row" style="margin-bottom:16px;">
         <label>画質</label>
@@ -323,7 +318,6 @@ const QUALITY_PRESETS = {
 const TARGET_TOTAL = 15; // seconds, guideline only
 
 let clips = []; // {id, file, url, srcDuration, start, dur, telop}
-let bgmFile = null;
 let ffmpeg = null;
 let ffmpegReady = false;
 
@@ -335,9 +329,6 @@ const buildBtn = document.getElementById('buildBtn');
 const statusLine = document.getElementById('statusLine');
 const progressBar = document.getElementById('progressBar');
 const resultArea = document.getElementById('resultArea');
-const bgmInput = document.getElementById('bgmInput');
-const bgmBtn = document.getElementById('bgmBtn');
-const bgmName = document.getElementById('bgmName');
 
 const origAudioToggle = document.getElementById('origAudioToggle');
 const telopFontSelect = document.getElementById('telopFontSelect');
@@ -347,18 +338,10 @@ telopSizeRange.addEventListener('input', () => {
   telopSizeLabel.textContent = telopSizeRange.value;
 });
 
-const bgmVolInput = document.getElementById('bgmVol');
-const bgmVolLabel = document.getElementById('bgmVolLabel');
-bgmVolInput.addEventListener('input', () => {
-  bgmVolLabel.textContent = bgmVolInput.value + '%';
-});
-
-bgmBtn.addEventListener('click', () => bgmInput.click());
-bgmInput.addEventListener('change', () => {
-  if (bgmInput.files[0]) {
-    bgmFile = bgmInput.files[0];
-    bgmName.textContent = 'BGM：' + bgmFile.name;
-  }
+const audioVolInput = document.getElementById('audioVol');
+const audioVolLabel = document.getElementById('audioVolLabel');
+audioVolInput.addEventListener('input', () => {
+  audioVolLabel.textContent = audioVolInput.value + '%';
 });
 
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
@@ -440,6 +423,16 @@ async function analyzeClipInner(clip) {
     video.onerror = () => reject(new Error('load failed'));
   });
 
+  // iOS (Safari engine, including "Chrome" on iPhone) often won't decode
+  // real frames — for canvas drawing OR for accurate duration/seek info —
+  // until playback has actually started at least once. A brief muted
+  // play+pause "wakes up" the decoder before we rely on seeking.
+  try {
+    await video.play();
+    video.pause();
+    video.currentTime = 0;
+  } catch (e) { /* ignore — some browsers don't need this */ }
+
   const duration = await getReliableDuration(video);
   if (!duration || !isFinite(duration)) {
     // Couldn't determine a real length — fall back to a safe, fixed clip
@@ -466,14 +459,32 @@ async function analyzeClipInner(clip) {
   // shows solid black until playback actually starts).
   try {
     const seekAt = Math.min(clip.start + 0.15, Math.max((clip.srcDuration || 1) - 0.05, 0));
-    await seekTo(video, seekAt);
     const tCanvas = document.createElement('canvas');
     tCanvas.width = 96; tCanvas.height = 128;
     const tctx = tCanvas.getContext('2d');
-    const vw = video.videoWidth || 96, vh = video.videoHeight || 128;
-    const scale = Math.max(tCanvas.width / vw, tCanvas.height / vh);
-    const dw = vw * scale, dh = vh * scale;
-    tctx.drawImage(video, (tCanvas.width - dw) / 2, (tCanvas.height - dh) / 2, dw, dh);
+
+    const drawOnce = async (t) => {
+      await seekTo(video, t);
+      // Give iOS a couple of frames to actually paint the seeked position
+      // before we read it — seeking fires "seeked" slightly before the
+      // frame is really ready to be drawn on some iOS versions.
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const vw = video.videoWidth || 96, vh = video.videoHeight || 128;
+      const dscale = Math.max(tCanvas.width / vw, tCanvas.height / vh);
+      const dw = vw * dscale, dh = vh * dscale;
+      tctx.clearRect(0, 0, tCanvas.width, tCanvas.height);
+      tctx.drawImage(video, (tCanvas.width - dw) / 2, (tCanvas.height - dh) / 2, dw, dh);
+      const sample = tctx.getImageData(tCanvas.width / 2 - 5, tCanvas.height / 2 - 5, 10, 10).data;
+      let sum = 0;
+      for (let i = 0; i < sample.length; i += 4) sum += sample[i] + sample[i + 1] + sample[i + 2];
+      return sum; // near-zero means the frame is (still) solid black
+    };
+
+    let brightness = await drawOnce(seekAt);
+    if (brightness < 5) {
+      // Looked black — retry once a little further into the clip.
+      brightness = await drawOnce(Math.min(seekAt + 0.4, Math.max((clip.srcDuration || 1) - 0.05, 0)));
+    }
     clip.thumbUrl = tCanvas.toDataURL('image/jpeg', 0.8);
   } catch (e) { /* thumbnail is a nice-to-have; ignore failures */ }
 }
@@ -505,7 +516,7 @@ function renderClips() {
         </div>
         <div class="field-row">
           <label>テロップ文言</label>
-          <input type="text" maxlength="40" placeholder="例）艶やかな質感" data-telop="${clip.id}" value="${clip.telop}">
+          <input type="text" maxlength="40" placeholder="例）おススメソファー" data-telop="${clip.id}" value="${clip.telop}">
         </div>
         <div class="range-vals">${durText}</div>
       </div>
@@ -826,30 +837,16 @@ async function runBuild() {
     await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listContent));
     await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'combined.mp4']);
 
-    let bgmData = null;
-    if (bgmFile) {
-      statusLine.textContent = 'BGMを準備中…';
-      bgmData = await fetchFile(bgmFile);
-      await ffmpeg.writeFile('bgm_src', bgmData);
-    }
-
-    // Mux in BGM if provided (mixing with original audio, or standalone).
+    // Apply the volume setting to the original audio (if it's on).
     statusLine.textContent = '書き出し中…';
-    if (bgmFile) {
-      const vol = document.getElementById('bgmVol').value / 100;
-      if (useOrigAudio) {
-        await ffmpeg.exec([
-          '-i', 'combined.mp4', '-i', 'bgm_src',
-          '-filter_complex', `[1:a]volume=${vol}[bgmv];[0:a][bgmv]amix=inputs=2:duration=first:dropout_transition=0[a]`,
-          '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', 'output.mp4',
-        ]);
-      } else {
-        await ffmpeg.exec([
-          '-i', 'combined.mp4', '-i', 'bgm_src',
-          '-filter_complex', `[1:a]volume=${vol}[a]`,
-          '-map', '0:v', '-map', '[a]', '-shortest', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', 'output.mp4',
-        ]);
-      }
+    if (useOrigAudio) {
+      const vol = audioVolInput.value / 100;
+      await ffmpeg.exec([
+        '-i', 'combined.mp4',
+        '-filter:a', `volume=${vol}`,
+        '-map', '0:v', '-map', '0:a',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', 'output.mp4',
+      ]);
     } else {
       await ffmpeg.exec(['-i', 'combined.mp4', '-c', 'copy', 'output.mp4']);
     }
