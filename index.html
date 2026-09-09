@@ -217,8 +217,8 @@
 <div class="wrap">
 
   <header class="top">
-    <h1>商品リール作成</h1>
-    <div class="tag">ブラウザ内で処理 / サーバー不使用</div>
+    <h1>BWショート動画作成</h1>
+    <div class="tag">ブラウザ内で処理 / サーバー不使用　/ 作：吉永</div>
   </header>
 
   <div class="step">
@@ -466,7 +466,7 @@ function renderClips() {
         </div>
         <div class="field-row">
           <label>テロップ文言</label>
-          <input type="text" maxlength="24" placeholder="例）艶やかな質感" data-telop="${clip.id}" value="${clip.telop}">
+          <input type="text" maxlength="40" placeholder="例）艶やかな質感" data-telop="${clip.id}" value="${clip.telop}">
         </div>
         <div class="range-vals">${durText}</div>
       </div>
@@ -509,15 +509,48 @@ function updateStep1Badge() {
 
 // ---- Caption image generation (Canvas -> PNG) ----
 const TELOP_SIZE_PX = { 1: 38, 2: 48, 3: 58, 4: 70, 5: 84 };
+const TELOP_MAX_LINES = 3;
+
+function wrapCaptionText(ctx, text, maxWidth) {
+  const hasSpaces = /\s/.test(text);
+  const units = hasSpaces ? text.split(/\s+/) : Array.from(text);
+  const sep = hasSpaces ? ' ' : '';
+  const lines = [];
+  let cur = '';
+  for (const u of units) {
+    const test = cur ? cur + sep + u : u;
+    if (ctx.measureText(test).width > maxWidth && cur) {
+      lines.push(cur);
+      cur = u;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, TELOP_MAX_LINES);
+}
 
 function makeCaptionPNG(text, fontFamily, sizeLevel) {
   const fontPx = TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3];
+  const lineHeight = Math.round(fontPx * 1.28);
+  const padX = 48, padY = 22;
+  const maxTextWidth = OUT_W - 80 - padX * 2;
+
+  // Measure on a scratch canvas first so we know how tall the final canvas
+  // needs to be (depends on how many lines the text wraps to).
+  const measureCanvas = document.createElement('canvas');
+  const mctx = measureCanvas.getContext('2d');
+  mctx.font = `700 ${fontPx}px ${fontFamily}`;
+  const lines = text ? wrapCaptionText(mctx, text, maxTextWidth) : [];
+
+  const boxH = lines.length ? lines.length * lineHeight + padY * 2 : 0;
+  const canvasH = Math.max(boxH + 20, 40); // small margin so the box isn't clipped
   const canvas = document.createElement('canvas');
   canvas.width = OUT_W;
-  canvas.height = 260;
+  canvas.height = canvasH;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!text) return canvas;
+  if (!lines.length) return canvas;
 
   ctx.font = `700 ${fontPx}px ${fontFamily}`;
   ctx.textAlign = 'center';
@@ -525,18 +558,20 @@ function makeCaptionPNG(text, fontFamily, sizeLevel) {
 
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
-  const metrics = ctx.measureText(text);
-  const padX = 48, padY = 26;
-  const boxW = Math.min(canvas.width - 80, metrics.width + padX * 2);
-  const boxH = fontPx + padY * 2;
+  let maxLineWidth = 0;
+  for (const l of lines) maxLineWidth = Math.max(maxLineWidth, ctx.measureText(l).width);
+  const boxW = Math.min(canvas.width - 80, maxLineWidth + padX * 2);
 
-  ctx.fillStyle = 'rgba(20,19,15,0.82)';
+  ctx.fillStyle = 'rgba(20,19,15,0.5)';
   roundRect(ctx, cx - boxW / 2, cy - boxH / 2, boxW, boxH, 6);
   ctx.fill();
 
   ctx.fillStyle = '#f6f2e9';
   ctx.font = `700 ${fontPx}px ${fontFamily}`;
-  ctx.fillText(text, cx, cy + 2);
+  const firstLineY = cy - ((lines.length - 1) * lineHeight) / 2;
+  lines.forEach((line, idx) => {
+    ctx.fillText(line, cx, firstLineY + idx * lineHeight + 2);
+  });
 
   return canvas;
 }
@@ -686,6 +721,7 @@ async function runBuild() {
       const c = clips[i];
       if (c.telop && c.telop.trim()) {
         const canvas = makeCaptionPNG(c.telop.trim(), chosenFont, chosenSize);
+        c.capHeight = canvas.height;
         const blob = await canvasToPNGBlob(canvas);
         const buf = new Uint8Array(await blob.arrayBuffer());
         await ffmpeg.writeFile(`cap${i}.png`, buf);
@@ -698,7 +734,7 @@ async function runBuild() {
     // Doing video and audio as separate passes previously caused a slight
     // per-clip drift that accumulated into audio/video falling out of sync.
     statusLine.textContent = '各カットを整形中…';
-    const CAPTION_H = 260;
+    const TELOP_CENTER_FRACTION = 0.42; // slightly above true center
     const useOrigAudio = origAudioToggle.checked;
     const segmentFiles = [];
     for (let i = 0; i < clips.length; i++) {
@@ -712,7 +748,8 @@ async function runBuild() {
       let filter = `[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},setsar=1,fps=30[base]`;
       if (captionFiles.includes(i)) {
         args.push('-i', `cap${i}.png`);
-        const capY = Math.round((OUT_H - CAPTION_H) / 2);
+        const capH = c.capHeight || 100;
+        const capY = Math.round(OUT_H * TELOP_CENTER_FRACTION - capH / 2);
         filter += `;[base][1:v]overlay=0:${capY}[v]`;
       } else {
         filter += `;[base]null[v]`;
