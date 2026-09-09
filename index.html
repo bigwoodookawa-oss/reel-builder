@@ -226,7 +226,7 @@
       <div class="step-num" id="num1">1</div>
       <div class="step-title">動画を選ぶ（3〜5本）</div>
     </div>
-    <div class="step-sub">1商品を複数アングルで撮影した短い動画を選んでください</div>
+    <div class="step-sub">商品を複数アングルで撮影した3〜10秒以内の動画を選んでください</div>
     <div class="step-body">
       <label class="drop" id="drop">
         <input type="file" id="fileInput" accept="video/*" multiple>
@@ -271,7 +271,7 @@
       </div>
       <div class="field-row">
         <label>音量：<span class="range-vals" id="audioVolLabel">100%</span></label>
-        <input type="range" id="audioVol" min="0" max="150" value="100">
+        <input type="range" id="audioVol" min="0" max="100" value="100">
       </div>
     </div>
   </div>
@@ -444,14 +444,14 @@ async function analyzeClipInner(clip) {
     clip.srcDuration = duration;
 
     // Trim off the shaky first/last 0.5s (raising/lowering the camera),
-    // then use everything else as-is — capped at 10s from the start.
+    // then use the rest as-is. (No extra length cap here — staff are
+    // instructed to upload 3-10s clips already.)
     const pad = 0.5;
-    const MAX_USED = 10;
     let innerStart = 0, innerEnd = duration;
     if (duration > pad * 2 + 0.4) { innerStart = pad; innerEnd = duration - pad; }
     const usable = Math.max(innerEnd - innerStart, 0.3);
     clip.start = innerStart;
-    clip.dur = Math.min(usable, MAX_USED);
+    clip.dur = usable;
   }
 
   // Thumbnail: draw a seeked frame to canvas rather than relying on the
