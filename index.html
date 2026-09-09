@@ -97,7 +97,7 @@
     border:1px solid var(--line);
     padding:14px;
     display:grid;
-    grid-template-columns:96px 1fr;
+    grid-template-columns:108px 1fr;
     gap:12px;
   }
   .clip video{width:96px;height:128px;object-fit:cover;background:#000;}
@@ -262,7 +262,7 @@
         </div>
         <div class="field-row">
           <label>テロップの大きさ：<span id="telopSizeLabel">3</span></label>
-          <input type="range" id="telopSizeRange" min="1" max="5" step="1" value="3">
+          <input type="range" id="telopSizeRange" min="1" max="10" step="1" value="3">
         </div>
         <div class="field-row" style="grid-column:1 / -1;">
           <label style="display:flex;align-items:center;gap:8px;">
@@ -365,7 +365,10 @@ const telopSizeLabel = document.getElementById('telopSizeLabel');
 const telopBgToggle = document.getElementById('telopBgToggle');
 telopSizeRange.addEventListener('input', () => {
   telopSizeLabel.textContent = telopSizeRange.value;
+  refreshAllCaptionPreviews();
 });
+telopFontSelect.addEventListener('change', refreshAllCaptionPreviews);
+telopBgToggle.addEventListener('change', refreshAllCaptionPreviews);
 
 let telopOutlineColor = 'none';
 const outlineSwatches = document.getElementById('outlineSwatches');
@@ -374,6 +377,7 @@ outlineSwatches.querySelectorAll('.swatch').forEach(btn => {
     telopOutlineColor = btn.dataset.color;
     outlineSwatches.querySelectorAll('.swatch').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    refreshAllCaptionPreviews();
   });
 });
 
@@ -499,7 +503,7 @@ async function analyzeClipInner(clip) {
   try {
     const seekAt = Math.min(clip.start + 0.15, Math.max((clip.srcDuration || 1) - 0.05, 0));
     const tCanvas = document.createElement('canvas');
-    tCanvas.width = 96; tCanvas.height = 128;
+    tCanvas.width = 108; tCanvas.height = 192;
     const tctx = tCanvas.getContext('2d');
 
     const drawOnce = async (t) => {
@@ -537,12 +541,17 @@ function renderClips() {
     const durText = clip.analyzing
       ? '解析中…'
       : `アップロードした動画の長さ：${clip.srcDuration.toFixed(1)}秒`;
-    const thumbHtml = clip.thumbUrl
-      ? `<img src="${clip.thumbUrl}" alt="" style="width:96px;height:128px;object-fit:cover;background:#000;display:block;">`
-      : `<div style="width:96px;height:128px;background:#000;"></div>`;
+    const thumbInner = clip.thumbUrl
+      ? `<img src="${clip.thumbUrl}" alt="" style="width:100%;height:100%;object-fit:cover;background:#000;display:block;">`
+      : `<div style="width:100%;height:100%;background:#000;"></div>`;
+    const capPreviewSrc = generateCaptionDataURL(clip.telop);
     row.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
-        ${thumbHtml}
+        <div style="position:relative;width:108px;height:192px;overflow:hidden;">
+          ${thumbInner}
+          <img data-cappreview="${clip.id}" src="${capPreviewSrc || ''}" alt=""
+               style="position:absolute;left:0;top:37%;width:100%;transform:translateY(-50%);pointer-events:none;${capPreviewSrc ? '' : 'display:none;'}">
+        </div>
         <div style="display:flex;gap:4px;">
           <button class="btn-ghost" style="padding:3px 8px;font-size:11px;" data-move-up="${clip.id}" ${idx === 0 ? 'disabled' : ''}>↑</button>
           <button class="btn-ghost" style="padding:3px 8px;font-size:11px;" data-move-down="${clip.id}" ${idx === clips.length - 1 ? 'disabled' : ''}>↓</button>
@@ -585,11 +594,40 @@ function renderClips() {
     inp.addEventListener('input', () => {
       const c = clips.find(c => c.id === inp.dataset.telop);
       if (c) c.telop = inp.value;
+      const imgEl = clipList.querySelector(`[data-cappreview="${inp.dataset.telop}"]`);
+      if (imgEl) {
+        const src = generateCaptionDataURL(inp.value);
+        if (src) { imgEl.src = src; imgEl.style.display = ''; }
+        else { imgEl.style.display = 'none'; }
+      }
     });
   });
 
   updateTotal();
   updateStep1Badge();
+}
+
+// Renders a caption at a small fixed reference width for the in-list
+// preview — independent of the actual export resolution/quality setting.
+function generateCaptionDataURL(text) {
+  if (!text || !text.trim()) return null;
+  const font = telopFontSelect.value;
+  const size = parseInt(telopSizeRange.value, 10);
+  const bgOn = telopBgToggle.checked;
+  const canvas = makeCaptionPNG(text.trim(), font, size, bgOn, telopOutlineColor, 1080);
+  return canvas.toDataURL('image/png');
+}
+
+// Called whenever a global telop style setting changes (font/size/bg/outline)
+// so every clip's preview reflects it immediately.
+function refreshAllCaptionPreviews() {
+  clips.forEach(c => {
+    const imgEl = clipList.querySelector(`[data-cappreview="${c.id}"]`);
+    if (!imgEl) return;
+    const src = generateCaptionDataURL(c.telop);
+    if (src) { imgEl.src = src; imgEl.style.display = ''; }
+    else { imgEl.style.display = 'none'; }
+  });
 }
 
 function updateTotal() {
@@ -609,7 +647,7 @@ function updateStep1Badge() {
 }
 
 // ---- Caption image generation (Canvas -> PNG) ----
-const TELOP_SIZE_PX = { 1: 38, 2: 48, 3: 58, 4: 70, 5: 84 };
+const TELOP_SIZE_PX = { 1: 38, 2: 48, 3: 58, 4: 70, 5: 84, 6: 100, 7: 118, 8: 138, 9: 160, 10: 184 };
 const TELOP_MAX_LINES = 3;
 
 function wrapCaptionText(ctx, text, maxWidth) {
@@ -631,12 +669,12 @@ function wrapCaptionText(ctx, text, maxWidth) {
   return lines.slice(0, TELOP_MAX_LINES);
 }
 
-function makeCaptionPNG(text, fontFamily, sizeLevel, bgOn, outlineColor) {
-  const scale = OUT_W / 1080;
+function makeCaptionPNG(text, fontFamily, sizeLevel, bgOn, outlineColor, refW = OUT_W) {
+  const scale = refW / 1080;
   const fontPx = Math.round((TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3]) * scale);
   const lineHeight = Math.round(fontPx * 1.28);
   const padX = Math.round(48 * scale), padY = Math.round(22 * scale);
-  const maxTextWidth = OUT_W - 80 * scale - padX * 2;
+  const maxTextWidth = refW - 80 * scale - padX * 2;
 
   // Measure on a scratch canvas first so we know how tall the final canvas
   // needs to be (depends on how many lines the text wraps to).
@@ -648,7 +686,7 @@ function makeCaptionPNG(text, fontFamily, sizeLevel, bgOn, outlineColor) {
   const boxH = lines.length ? lines.length * lineHeight + padY * 2 : 0;
   const canvasH = Math.max(boxH + 20, 40); // small margin so text/outline isn't clipped
   const canvas = document.createElement('canvas');
-  canvas.width = OUT_W;
+  canvas.width = refW;
   canvas.height = canvasH;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
