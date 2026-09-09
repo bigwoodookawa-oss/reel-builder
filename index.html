@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>商品リール作成</title>
+<title>BWショート動画作成</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Zen+Old+Mincho:wght@400;700;900&family=Zen+Maru+Gothic:wght@400;500;700;900&family=Mochiy+Pop+One&family=Klee+One:wght@400;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -217,7 +217,7 @@
 <div class="wrap">
 
   <header class="top">
-    <h1>商品リール作成</h1>
+    <h1>BWショート動画作成</h1>
     <div class="tag">ブラウザ内で処理 / サーバー不使用</div>
   </header>
 
@@ -286,8 +286,16 @@
       <div class="step-num" id="num3">3</div>
       <div class="step-title">結合して書き出し</div>
     </div>
-    <div class="step-sub">1080×1920（Reels縦型）・15秒目安のmp4を作成します</div>
+    <div class="step-sub">Reels縦型のmp4を作成します（長さはアップロードした動画に応じて自動で決まります・最大10秒/本）</div>
     <div class="step-body">
+      <div class="field-row" style="margin-bottom:16px;">
+        <label>画質</label>
+        <select id="qualitySelect">
+          <option value="high">高画質（1080×1920・容量大）</option>
+          <option value="standard" selected>標準（720×1280・おすすめ）</option>
+          <option value="light">軽量（540×960・容量小）</option>
+        </select>
+      </div>
       <div id="resultArea"></div>
     </div>
   </div>
@@ -306,7 +314,12 @@
 import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js";
 import { fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
 
-const OUT_W = 1080, OUT_H = 1920;
+let OUT_W = 1080, OUT_H = 1920;
+const QUALITY_PRESETS = {
+  high: { w: 1080, h: 1920 },
+  standard: { w: 720, h: 1280 },
+  light: { w: 540, h: 960 },
+};
 const TARGET_TOTAL = 15; // seconds, guideline only
 
 let clips = []; // {id, file, url, srcDuration, start, dur, telop}
@@ -434,56 +447,35 @@ async function analyzeClipInner(clip) {
     clip.srcDuration = 0;
     clip.start = 0;
     clip.dur = 4;
-    return;
-  }
-  clip.srcDuration = duration;
+  } else {
+    clip.srcDuration = duration;
 
-  // Trim off the shaky first/last 0.5s (raising/lowering the camera).
-  const pad = 0.5;
-  let innerStart = 0, innerEnd = duration;
-  if (duration > pad * 2 + 0.4) { innerStart = pad; innerEnd = duration - pad; }
-  const usable = Math.max(innerEnd - innerStart, 0.3);
-  const targetLen = Math.min(usable, 4);
-
-  if (usable <= targetLen + 0.05) {
+    // Trim off the shaky first/last 0.5s (raising/lowering the camera),
+    // then use everything else as-is — capped at 10s from the start.
+    const pad = 0.5;
+    const MAX_USED = 10;
+    let innerStart = 0, innerEnd = duration;
+    if (duration > pad * 2 + 0.4) { innerStart = pad; innerEnd = duration - pad; }
+    const usable = Math.max(innerEnd - innerStart, 0.3);
     clip.start = innerStart;
-    clip.dur = usable;
-    return;
+    clip.dur = Math.min(usable, MAX_USED);
   }
 
-  // Slide a window across the clip, sampling a few low-res frames per
-  // window, and pick the window with the least frame-to-frame change
-  // (i.e. the steadiest, least "moving" segment).
-  const canvas = document.createElement('canvas');
-  canvas.width = 48; canvas.height = 27;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  async function grabFrame(t) {
-    await seekTo(video, Math.min(Math.max(t, 0), duration - 0.02));
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  }
-  function diffScore(a, b) {
-    let sum = 0;
-    for (let i = 0; i < a.length; i += 4) sum += Math.abs(a[i] - b[i]);
-    return sum;
-  }
-
-  const step = 0.5;
-  const samples = 4;
-  let best = { start: innerStart, score: Infinity };
-  for (let ws = innerStart; ws + targetLen <= innerEnd + 0.001; ws += step) {
-    const frames = [];
-    for (let k = 0; k < samples; k++) {
-      const t = ws + (targetLen * k) / (samples - 1);
-      frames.push(await grabFrame(t));
-    }
-    let score = 0;
-    for (let k = 1; k < frames.length; k++) score += diffScore(frames[k - 1], frames[k]);
-    if (score < best.score) best = { start: ws, score };
-  }
-  clip.start = best.start;
-  clip.dur = targetLen;
+  // Thumbnail: draw a seeked frame to canvas rather than relying on the
+  // <video> element to paint one itself (unreliable on mobile — often
+  // shows solid black until playback actually starts).
+  try {
+    const seekAt = Math.min(clip.start + 0.15, Math.max((clip.srcDuration || 1) - 0.05, 0));
+    await seekTo(video, seekAt);
+    const tCanvas = document.createElement('canvas');
+    tCanvas.width = 96; tCanvas.height = 128;
+    const tctx = tCanvas.getContext('2d');
+    const vw = video.videoWidth || 96, vh = video.videoHeight || 128;
+    const scale = Math.max(tCanvas.width / vw, tCanvas.height / vh);
+    const dw = vw * scale, dh = vh * scale;
+    tctx.drawImage(video, (tCanvas.width - dw) / 2, (tCanvas.height - dh) / 2, dw, dh);
+    clip.thumbUrl = tCanvas.toDataURL('image/jpeg', 0.8);
+  } catch (e) { /* thumbnail is a nice-to-have; ignore failures */ }
 }
 
 
@@ -495,8 +487,17 @@ function renderClips() {
     const durText = clip.analyzing
       ? '解析中…'
       : `アップロードした動画の長さ：${clip.srcDuration.toFixed(1)}秒`;
+    const thumbHtml = clip.thumbUrl
+      ? `<img src="${clip.thumbUrl}" alt="" style="width:96px;height:128px;object-fit:cover;background:#000;display:block;">`
+      : `<div style="width:96px;height:128px;background:#000;"></div>`;
     row.innerHTML = `
-      <video src="${clip.url}" muted preload="metadata"></video>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
+        ${thumbHtml}
+        <div style="display:flex;gap:4px;">
+          <button class="btn-ghost" style="padding:3px 8px;font-size:11px;" data-move-up="${clip.id}" ${idx === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn-ghost" style="padding:3px 8px;font-size:11px;" data-move-down="${clip.id}" ${idx === clips.length - 1 ? 'disabled' : ''}>↓</button>
+        </div>
+      </div>
       <div class="clip-main">
         <div class="clip-title">
           <span>CLIP ${String(idx + 1).padStart(2, '0')}</span>
@@ -516,6 +517,18 @@ function renderClips() {
     btn.addEventListener('click', () => {
       clips = clips.filter(c => c.id !== btn.dataset.remove);
       renderClips();
+    });
+  });
+  clipList.querySelectorAll('[data-move-up]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = clips.findIndex(c => c.id === btn.dataset.moveUp);
+      if (i > 0) { [clips[i - 1], clips[i]] = [clips[i], clips[i - 1]]; renderClips(); }
+    });
+  });
+  clipList.querySelectorAll('[data-move-down]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = clips.findIndex(c => c.id === btn.dataset.moveDown);
+      if (i >= 0 && i < clips.length - 1) { [clips[i + 1], clips[i]] = [clips[i], clips[i + 1]]; renderClips(); }
     });
   });
   clipList.querySelectorAll('[data-telop]').forEach(inp => {
@@ -569,10 +582,11 @@ function wrapCaptionText(ctx, text, maxWidth) {
 }
 
 function makeCaptionPNG(text, fontFamily, sizeLevel) {
-  const fontPx = TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3];
+  const scale = OUT_W / 1080;
+  const fontPx = Math.round((TELOP_SIZE_PX[sizeLevel] || TELOP_SIZE_PX[3]) * scale);
   const lineHeight = Math.round(fontPx * 1.28);
-  const padX = 48, padY = 22;
-  const maxTextWidth = OUT_W - 80 - padX * 2;
+  const padX = Math.round(48 * scale), padY = Math.round(22 * scale);
+  const maxTextWidth = OUT_W - 80 * scale - padX * 2;
 
   // Measure on a scratch canvas first so we know how tall the final canvas
   // needs to be (depends on how many lines the text wraps to).
@@ -598,7 +612,7 @@ function makeCaptionPNG(text, fontFamily, sizeLevel) {
   const cy = canvas.height / 2;
   let maxLineWidth = 0;
   for (const l of lines) maxLineWidth = Math.max(maxLineWidth, ctx.measureText(l).width);
-  const boxW = Math.min(canvas.width - 80, maxLineWidth + padX * 2);
+  const boxW = Math.min(canvas.width - 80 * scale, maxLineWidth + padX * 2);
 
   ctx.fillStyle = 'rgba(20,19,15,0.5)';
   roundRect(ctx, cx - boxW / 2, cy - boxH / 2, boxW, boxH, 6);
@@ -735,6 +749,9 @@ async function runBuild() {
   buildBtn.disabled = true;
   resultArea.innerHTML = '';
   progressBar.style.width = '0%';
+  const preset = QUALITY_PRESETS[document.getElementById('qualitySelect').value] || QUALITY_PRESETS.standard;
+  OUT_W = preset.w;
+  OUT_H = preset.h;
   try {
     await ensureFFmpeg();
 
