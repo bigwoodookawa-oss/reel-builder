@@ -281,16 +281,15 @@
           </div>
         </div>
         <div class="field-row" style="grid-column:1 / -1;">
-          <label>店舗名（テロップの末尾に自動で付きます）</label>
+          <label>店舗名（テロップの上に表示されます）</label>
           <div style="display:flex;gap:8px;">
             <select id="storeQuickSelect" style="flex:0 0 auto;width:auto;">
-              <option value="">よく使う店舗から選ぶ…</option>
-              <!-- 実際の店舗名が決まったら、下のoptionのvalueと表示名を書き換えてください -->
-              <option value="ビッグウッド 鳥栖店">ビッグウッド 鳥栖店</option>
-              <option value="ビッグウッド 大分南店">ビッグウッド 大分南店</option>
-              <option value="ビッグウッド 福岡東店">ビッグウッド 福岡東店</option>
+              <option value="">店名は入れない</option>
+              <option value="鳥栖店">鳥栖店</option>
+              <option value="都城店">都城店</option>
+              <option value="多摩店">多摩店</option>
             </select>
-            <input type="text" id="storeNameInput" placeholder="例）OOD 新宿店" style="flex:1;">
+            <input type="text" id="storeNameInput" style="flex:1;">
           </div>
         </div>
       </div>
@@ -399,13 +398,13 @@ outlineSwatches.querySelectorAll('.swatch').forEach(btn => {
 // ?store=OOD%20新宿店 pre-fills this so a bookmarked link per store
 // avoids staff having to pick it manually each time.
 const STORE_TELOP_SIZE = 3;
-const STORE_CENTER_FRACTION = 0.30;
+const STORE_CENTER_FRACTION = 0.10;
 const storeQuickSelect = document.getElementById('storeQuickSelect');
 const storeNameInput = document.getElementById('storeNameInput');
 const storeFromUrl = new URLSearchParams(location.search).get('store');
 if (storeFromUrl) storeNameInput.value = storeFromUrl;
 storeQuickSelect.addEventListener('change', () => {
-  if (storeQuickSelect.value) storeNameInput.value = storeQuickSelect.value;
+  storeNameInput.value = storeQuickSelect.value;
   refreshAllCaptionPreviews();
 });
 storeNameInput.addEventListener('input', refreshAllCaptionPreviews);
