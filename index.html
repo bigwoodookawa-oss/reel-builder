@@ -208,11 +208,12 @@
     border:1px solid var(--ink);
     background:#000;
   }
-  .result a.dl{
+  .result a.dl, .result button.dl{
     display:inline-block;margin-top:12px;
     background:var(--gold-deep);color:#fff;
     padding:11px 22px;text-decoration:none;
     font-size:14px;font-weight:700;
+    border:none;font-family:inherit;cursor:pointer;
   }
 
   .total-dur{
@@ -230,7 +231,6 @@
 
   <header class="top">
     <h1>BWショート動画作成</h1>
-    <div class="tag">ブラウザ内で処理 / サーバー不使用</div>
   </header>
 
   <div class="step">
@@ -943,14 +943,28 @@ async function runBuild() {
     const outData = await ffmpeg.readFile('output.mp4');
     const blob = new Blob([outData.buffer], { type: 'video/mp4' });
     const outUrl = URL.createObjectURL(blob);
+    const shareFile = new File([outData.buffer], 'reel.mp4', { type: 'video/mp4' });
+    const canShareFile = !!(navigator.canShare && navigator.canShare({ files: [shareFile] }));
 
     resultArea.innerHTML = `
       <div class="result">
         <video src="${outUrl}" controls playsinline></video><br>
-        <a class="dl" href="${outUrl}" download="reel.mp4">動画をダウンロード</a>
+        ${canShareFile ? '<button class="dl" id="shareBtn" type="button">Instagramなどで共有</button><br><br>' : ''}
+        <a class="dl" href="${outUrl}" download="reel.mp4" style="background:var(--ink);">動画をダウンロード</a>
       </div>
     `;
-    statusLine.textContent = '完成しました。ダウンロードしてInstagramにアップロードしてください。';
+    if (canShareFile) {
+      document.getElementById('shareBtn').addEventListener('click', async () => {
+        try {
+          await navigator.share({ files: [shareFile], title: 'リール動画' });
+        } catch (e) {
+          // User cancelled the share sheet, or the browser rejected it — no need to show an error for this.
+        }
+      });
+    }
+    statusLine.textContent = canShareFile
+      ? '完成しました。「Instagramなどで共有」から直接送るか、ダウンロードしてください。'
+      : '完成しました。ダウンロードしてInstagramにアップロードしてください。';
     progressBar.style.width = '100%';
   } catch (err) {
     console.error(err);
